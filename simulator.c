@@ -18,56 +18,68 @@
 #define down sem_wait
 #define up   sem_post
 #define try_down sem_trywait
+#define clear() printf("\033[H\033[J")
 
-#define num_max_cells 35
+#define num_max_cells 40
 #define initial_cells_count 1
 // Body resources define the shared resources by cells and bacteria
-int num_body_resources = 3;
+int num_body_resources = 4;
 int cells_count = 0;
 
 semaphore cell_semaphore;
-pthread_mutex_t resources_lock   = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t cells_count_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t action = PTHREAD_MUTEX_INITIALIZER;
 // A variavel de condição sinaliza se o corpo precisa de recursos
 pthread_cond_t needing_resources = PTHREAD_COND_INITIALIZER;
 
 int produce_random_number(){  
-    return (rand()%5 + 1);
+    int mult = rand()%10 + 5;
+    return 2*mult;
+}
+
+void print_system_state(){
+    clear();
+    printf("\tCell count: %d \n\tResources count: %d\n",cells_count,num_body_resources);    
 }
 
 void * cell_action(void * arg){
     int id = *((int *) arg);
+    espera:
     down(&cell_semaphore);
-    printf("Célula %dº spawna\n",id);
-    
+
+    //printf("Célula %dº spawna\n",id);    
     lock(&cells_count_lock);
         cells_count++;
-        printf("Cell count %d\n",cells_count);
+        //printf("Cell count %d\n",cells_count);
     unlock(&cells_count_lock);
     while(1){        
         lock(&action);
         if(num_body_resources <= 0) {
             // Célula morre se não há recurso para ela
-            printf("Célula %dº morre por falta de recursos\n",id);
+            //printf("Célula %dº morre por falta de recursos\n",id);
             lock(&cells_count_lock);
                 cells_count--;
-                printf("Cell count %d\n",cells_count);
-            unlock(&cells_count_lock);
-
-            // Avisa que o corpo precisa de recursos
-            signal(&needing_resources);
+                //printf("Cell count %d\n",cells_count);
+            unlock(&cells_count_lock);            
             unlock(&action);
-            break;            
+            // Volta para estado de espera
+            goto espera;
         }
         else {
-            lock(&resources_lock);
-                num_body_resources--;
-                printf("Celula %dº fazendo mitose(Estado recursos atual: %d)\n",id,num_body_resources);
+            if(num_body_resources < 10){
+                // Avisa que o corpo precisa de recursos                
+                signal(&needing_resources);
+            }
+            // Se já não estiver no número máximo de células faça a mitose
+            if(cells_count < num_max_cells){
+                // Célula usa dois recursos para fazer mitose
+                num_body_resources -= 2;
+                //printf("Celula %dº fazendo mitose(Estado recursos atual: %d)\n",id,num_body_resources);
                 up(&cell_semaphore);
-            unlock(&resources_lock);
+            }                            
             sleep(1);
         }
+        print_system_state();
         unlock(&action);            
     }
     pthread_exit(0);
@@ -80,14 +92,16 @@ void * system_producer_action(void * arg) {
                 // Espera enquanto não for necessário
                 wait(&needing_resources,&action);
             }
-            lock(&resources_lock);
+            
             num_body_resources = produce_random_number();
-            printf("Corpo produziu %d recursos\n",num_body_resources );                    
+            printf("\tCorpo produzindo %d recursos...\n",num_body_resources, cells_count );            
+            if(cells_count == 0){
+                up(&cell_semaphore);
+            }
             sleep(2);
-            unlock(&resources_lock);
+            
         unlock(&action);
-    }
-        
+    }      
 }
 
 int main() {

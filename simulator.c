@@ -22,12 +22,9 @@
 
 #define num_max_cells    40
 #define num_max_bacteria 40
-#define initial_cells_count 1
-#define initial_bacteria_count 3
-// Body resources define the shared resources by cells and bacteria
-int num_body_resources = 12;
-int cells_count = 0;
-int bacteria_count = 0;
+#define num_white_cells 4
+#define initial_cells_count 10
+#define initial_bacteria_count 10
 
 semaphore cell_semaphore;
 semaphore bacteria_semaphore;
@@ -38,9 +35,14 @@ pthread_mutex_t resources_lock       = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t cell_action_lock     = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t bacteria_action_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t print_lock           = PTHREAD_MUTEX_INITIALIZER;
-
+pthread_mutex_t white_kill_lock      = PTHREAD_MUTEX_INITIALIZER;
 // A variavel de condição sinaliza se o corpo precisa de recursos
-pthread_cond_t needing_resources    = PTHREAD_COND_INITIALIZER;
+pthread_cond_t needing_resources     = PTHREAD_COND_INITIALIZER;
+// Body resources define the shared resources by cells and bacteria
+int num_body_resources  = 100;
+int cells_count         = 0;
+int bacteria_count      = 0;
+int white_cell_killings = 0;
 
 int produce_random_number(){
     return 2*(rand()%10 + 5);
@@ -49,48 +51,73 @@ int produce_random_number(){
 void print_system_state(){
     lock(&print_lock);
     clear();
-    printf("\tCell count: %d\n", cells_count);
-    printf("\tBacteria count: %d\n",bacteria_count);
-    printf("\tResources count: %d\n",num_body_resources);
+    printf("\tCell count:                 %d\n", cells_count);
+    printf("\tBacteria count:             %d\n",bacteria_count);
+    printf("\tResources count:            %d\n",num_body_resources);
+
+    lock(&white_kill_lock);
+    printf("\tWhite cells intend to kill: %d\n",white_cell_killings);
+    unlock(&white_kill_lock);
+
     if(bacteria_count == num_max_bacteria){
-        printf("\tINFECÇÃO DOMINOU O CORPO");
+        printf("\tINFECÇÃO DOMINOU O CORPO: aperte qualquer tecla para encerrar a execução");
+        getchar();
         exit(0);
     }
     if(bacteria_count == 0 || cells_count == num_max_bacteria){
-        printf("\t CORPO GANHOU DA INFECÇÃO");
+        printf("\tCORPO GANHOU DA INFECÇÃO: aperte qualquer tecla para encerrar a execução");
+        getchar();
         exit(0);
     }
     unlock(&print_lock);
 }
-
-void * bacteria_action(void * arg){
+void * white_cell_action(void * arg) {
+    sleep(1);
+    while(1){
+        lock(&white_kill_lock);
+        // Pretende matar 2 bacterias
+        white_cell_killings++;
+        unlock(&white_kill_lock);
+        sleep(2);
+    }    
+    
+}
+void * bacteria_action(void * arg) {
     int id = *((int *) arg);
     espera_bacteria:
     down(&bacteria_semaphore);
 
     lock(&bacteria_count_lock);
-    //printf("Bacteria %dº spawna\n",id);
     bacteria_count++;
     unlock(&bacteria_count_lock);
 
     while(1){
         lock(&bacteria_action_lock);
-        //printf("Bacteria count %d\n",bacteria_count);
         if(num_body_resources <= 0){
             // Bacteria morre de fome
             bacteria_count--;
             unlock(&bacteria_action_lock);
             print_system_state();
             signal(&needing_resources);
-            //printf("Bacteria %dº morre\n",id);
-            goto espera_bacteria;            
+            goto espera_bacteria;   
+        }
+        if(white_cell_killings > 0){
+            // Se o macrofago precisa matar...
+            lock(&white_kill_lock);
+            white_cell_killings--;
+            unlock(&white_kill_lock);
+
+            bacteria_count--;
+            unlock(&bacteria_action_lock);
+            print_system_state();
+            
+            goto espera_bacteria;
         }
         else{
             // Se já não estiver no número máximo de bacterias faça a mitose
             if(bacteria_count < num_max_bacteria){
                 // Bacteria usa um recurso para fazer mitose
                 num_body_resources--;
-                //printf("bact %dº fazendo mitose(Estado recursos atual: %d)\n",id,num_body_resources);
                 up(&bacteria_semaphore);                
                 sleep(1);          
             }
@@ -105,20 +132,16 @@ void * cell_action(void * arg){
     int id = *((int *) arg);
     espera_celula:
     down(&cell_semaphore);
-
-    //printf("Célula %dº spawna\n",id);    
+    
     lock(&cells_count_lock);
-        cells_count++;
-        //printf("Cell count %d\n",cells_count);
+        cells_count++;        
     unlock(&cells_count_lock);
     while(1){        
         lock(&cell_action_lock);
         if(num_body_resources <= 0) {
-            // Célula morre se não há recurso para ela
-            //printf("Célula %dº morre por falta de recursos\n",id);
+            // Célula morre se não há recurso para ela            
             lock(&cells_count_lock);
-                cells_count--;
-                //printf("Cell count %d\n",cells_count);
+                cells_count--;                
             unlock(&cells_count_lock);            
             print_system_state();
             unlock(&cell_action_lock);
@@ -126,7 +149,7 @@ void * cell_action(void * arg){
             goto espera_celula;
         }
         else {
-            if(num_body_resources < 10){
+            if(num_body_resources < 30){
                 // Avisa que o corpo precisa de recursos                
                 signal(&needing_resources);
             }
@@ -135,8 +158,7 @@ void * cell_action(void * arg){
                 // Célula usa dois recursos para fazer mitose
                 lock(&resources_lock);
                 num_body_resources -= 2;
-                unlock(&resources_lock);
-                //printf("Celula %dº fazendo mitose(Estado recursos atual: %d)\n",id,num_body_resources);
+                unlock(&resources_lock);                
                 up(&cell_semaphore);
             }
             sleep(1);
@@ -176,6 +198,7 @@ int main() {
 
     pthread_t cells[num_max_cells];
     pthread_t bacteria[num_max_bacteria];
+    pthread_t white_cells[num_white_cells];
     pthread_t system_producer;
 
     // Initialize semaphores
@@ -193,6 +216,11 @@ int main() {
         id = (int *) malloc(sizeof(int));
         *id = i;
         pthread_create(&bacteria[i], NULL, bacteria_action,(void *) (id));
+    }
+    for (i = 0; i < num_white_cells ; i++) {
+        id = (int *) malloc(sizeof(int));
+        *id = i;
+        pthread_create(&white_cells[i], NULL, white_cell_action,(void *) (id));
     }
     for (i = 0; i < num_max_bacteria ; i++) {
         pthread_join(cells[i],NULL);    

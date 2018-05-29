@@ -30,11 +30,17 @@
 semaphore cell_semaphore;
 semaphore bacteria_semaphore;
 
+// Lock para o contador de celulas
 pthread_mutex_t cells_count_lock     = PTHREAD_MUTEX_INITIALIZER;
+// Lock para o contador de bacterias
 pthread_mutex_t bacteria_count_lock  = PTHREAD_MUTEX_INITIALIZER;
+// Lock para o contador de recursos
 pthread_mutex_t resources_lock       = PTHREAD_MUTEX_INITIALIZER;
+// Lock para acesso exclusivo da celula
 pthread_mutex_t cell_action_lock     = PTHREAD_MUTEX_INITIALIZER;
+// Lock para acesso exclusivo da bacteria
 pthread_mutex_t bacteria_action_lock = PTHREAD_MUTEX_INITIALIZER;
+// Lock para acesso da variavel dos macrofagos
 pthread_mutex_t white_kill_lock      = PTHREAD_MUTEX_INITIALIZER;
 // O lock print serve apenas para printar o estado do sistema
 pthread_mutex_t print_lock           = PTHREAD_MUTEX_INITIALIZER;
@@ -51,7 +57,9 @@ int produce_random_number() {
 }
 
 void print_system_state(char* str, int num,int identification){
+    // Função para printar todas as variaveis que envolvem o estado do sistema
     // Identification é 1 para celula 0 para bacteria
+    // Uso do lock por conta do acesso mutuo a essa função por diferentes threads
     lock(&print_lock);
     clear();
     printf("\tCell count:                 %d\n", cells_count);
@@ -70,11 +78,13 @@ void print_system_state(char* str, int num,int identification){
     }
 
     if((bacteria_count > 2*cells_count && bacteria_count > 2*initial_bacteria_count)){
+        // Condição para infeccção ganhar
         printf("\tINFECÇÃO DOMINOU O CORPO: aperte qualquer tecla para encerrar a execução");
         getchar();
         exit(0);
     }
     if((cells_count > 2*bacteria_count) && cells_count > 2*initial_cells_count) {
+        // Condição para corpo ganhar
         printf("\tCORPO GANHOU DA INFECÇÃO: aperte qualquer tecla para encerrar a execução");
         getchar();
         exit(0);
@@ -86,7 +96,7 @@ void * white_cell_action(void * arg) {
     sleep(1);
     while(1){
         lock(&white_kill_lock);
-        // Pretende matar 2 bacterias
+        // Pretende matar uma bacteria a mais
         white_cell_killings++;
         unlock(&white_kill_lock);
         sleep(3);
@@ -114,14 +124,16 @@ void * bacteria_action(void * arg) {
         }
         if(white_cell_killings > 0){
             // Se o macrofago precisa matar...
+            // reduz a pretenção de morte do macrofago
             lock(&white_kill_lock);
             white_cell_killings--;
             unlock(&white_kill_lock);
-
+            // reduz a contagem de bacteria
             bacteria_count--;
             unlock(&bacteria_action_lock);
             print_system_state("Bacteria morrendo por macrofago",id,0);
             
+            // Volta a estado de espera
             goto espera_bacteria;
         }
         else{
@@ -129,7 +141,7 @@ void * bacteria_action(void * arg) {
             if(bacteria_count < num_max_bacteria){
                 // Bacteria usa um recurso para fazer mitose
                 num_body_resources--;
-                print_system_state("Bacteria mitose",id,0);
+                print_system_state("Bacteria fazendo mitose",id,0);
                 up(&bacteria_semaphore);                                       
             }
         }
@@ -142,6 +154,8 @@ void * bacteria_action(void * arg) {
 void * cell_action(void * arg){
     int id = *((int *) arg);
     espera_celula:
+    // Todas as threads ficam esperando aqui por uma condição de mitose
+    // Quando ela acontece, entram
     down(&cell_semaphore);
     
     lock(&cells_count_lock);
@@ -154,7 +168,7 @@ void * cell_action(void * arg){
             lock(&cells_count_lock);
                 cells_count--;                
             unlock(&cells_count_lock);                   
-            print_system_state("Célula morrendo",id,1);            
+            print_system_state("Célula morrendo de fome",id,1);            
             unlock(&cell_action_lock);
             // Volta para estado de espera_celula
             goto espera_celula;
@@ -175,7 +189,10 @@ void * cell_action(void * arg){
             }            
         }
                 
-        unlock(&cell_action_lock);            
+        unlock(&cell_action_lock);
+        // Tempo de sleep para desacelerar processo da célula
+        // Assim, ela fica mais lenta que a bactéria 
+        // Logo, o sistema fica mais balanceado
         sleep(3);
     }
     pthread_exit(0);
@@ -185,16 +202,15 @@ void * system_producer_action(void * arg) {
     while(1){
         lock(&resources_lock);
             while (num_body_resources > 0){
-                // Espera enquanto não for necessário
+                // Espera sinal de necessidade
                 wait(&needing_resources,&resources_lock);
             }
-            
+            // Produz um número aleatorio de recursos
             num_body_resources = produce_random_number();
             
             if(cells_count == 0){
                 up(&cell_semaphore);
             }
-            //sleep(1);
             
         unlock(&resources_lock);
     }      
